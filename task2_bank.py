@@ -4,70 +4,104 @@ from random import expovariate, seed
 
 ## Model components ------------------------           
 num_customers = 0
-
+def bank_empty():
+	return num_customers ==0
 class Source(Process):
-    """ Source generates customers randomly """
-
-    def generate(self,number,meanTBA,resource):          
-        for i in range(number):
-            c = Customer(name = "Customer%02d"%(i,))
-            activate(c,c.visit(b=resource))              
-            t = expovariate(1.0/meanTBA)                 
-            yield hold,self,t
+	""" Source generates customers randomly """
+	def generate(self,number,interval,counters):          
+		for i in range(number):
+			c = Customer(name = "Customer%02d"%(i,))
+			activate(c,c.visit(counters))   
+			           
+			t = expovariate(1.0/interval)                 
+			yield hold,self,t
+def NoInSystem(R):                                                  
+    """ Total number of customers in the resource R"""
+    return (len(R.waitQ)+len(R.activeQ))                            
 
 class Customer(Process):
-    """ Customer arrives, is served and leaves """
+	""" Customer arrives, is served and leaves """
         
-    numBalking = 0                                       
-
-    def visit(self,b):                                   
-        arrive = now()
+	numBalking = 0                                       
+	def visit(self,counters):                                   
+		arrive = now()
         #print "%8.4f %s: Here I am "%(now(),self.name)
-        global num_customers
-        num_customers += 1
-        
-        if num_customers <= maxInSystem:#maxInQueue:     # the test     
-            yield request,self,b                         
-          
-            wait = now()-arrive
-            wM.observe(wait) 
-            cM.observe(num_customers)
+		
+		
+		global num_customers
+		num_customers += 1
+		
+		if num_customers <= maxInSystem:#maxInQueue:     # the test     
+			Qlength = [NoInSystem(counters[i]) for i in range(Nc)] 
+			for i in range(Nc):                                         
+				if Qlength[i] == 0 or Qlength[i] == min(Qlength):
+					choice = i  # the chosen queue number                
+					break
+			#some signalling
+			event1 = SimEvent('Event-1')
+			signal = Signaller()
+			activate(signal, signal.sendSignals(counters = kk, choice = choice, event = event1))   
+			yield request,self,counters[choice]
+			#yield queueevent, self, event1                         
+			#self.interrupt()
+			wait = now()-arrive
+			wM.observe(wait) 
+			cM.observe(num_customers)
+			#print b.waitQ
+			print num_customers
            # print "%8.4f %s: Wait %6.3f"%(now(),self.name,wait)
-            tib = expovariate(1.0/timeInBank)            
-            yield hold,self,tib                          
-            yield release,self,b
+			tib = expovariate(1.0/timeInBank)            
+			yield hold,self,tib                          
+			yield release,self,counters[choice]
            # print "%8.4f %s: Finished  "%(now(),self.name)
-            num_customers -=1 
-        else:
-            Customer.numBalking += 1 
-            num_customers -= 1     
-            cM.observe(num_customers)
+			num_customers -=1 
+		else:
+			Customer.numBalking += 1 
+			num_customers -= 1     
+			cM.observe(num_customers)
                 
            # print "%8.4f %s: BALKING   "%(now(),self.name) 
-
+class Signaller(Process):
+	def sendSignals(self,counters, choice, event):
+		tmp = choice
+		Qlength = [NoInSystem(counters[i]) for i in range(Nc)] 
+		for i in range(Nc):  
+			if i == choice:
+				continue                                       
+			if Qlength[i] < Qlength[choice]:
+				choice = i  # the chosen queue number                
+		if choice != tmp:
+			event.signal()
+			print "signal!"
+		yield hold, self, 0
+			
+		
 ## Experiment data -------------------------------       
 
 timeInBank = 4.5 # mean, minutes                        
 ARRint = 1.0     # mean interarrival time, minutes
-numServers = 6	    # servers
+numServers = 5	    # servers
 maxInSystem = 25   # customers
 maxInQueue = maxInSystem - numServers                    
 
 maxNumber = 80000
 maxTime = 480.0 # minutes                                      
 theseed = 12345                                          
+Nc = 7
 
+    
 ## Model/Experiment ------------------------------
+
+sE = SimEvent(name='Change lines')
 wM = Monitor()   
 cM = Monitor() 
 seed(theseed)                                            
-k = Resource(capacity=numServers,
-             name="Counter",unitName="Clerk")            
-
-initialize()
+kk = [Resource(name="Clerk" + str(i)) for i in range(Nc)]   
+initialize()    
 s = Source('Source')
-activate(s, s.generate(number=maxNumber,meanTBA=ARRint, 
-                         resource=k),at=0.0)             
+activate(s,s.generate(number=maxNumber,interval=ARRint,   
+                      counters=kk),at=0.0) 
+
 simulate(until=maxTime)
 
 ## Results -----------------------------------------
